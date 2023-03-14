@@ -7,7 +7,9 @@ import Foundation
 import StreamChat
 
 /// A protocol describing an object that can be manage the playback of an audio file or stream.
-public protocol AudioPlaying {
+public protocol AudioPlaying: AnyObject {
+    static func build() -> AudioPlaying
+
     /// Instructs the player to load the asset from the provided URL and prepare it for streaming.
     /// - Parameters:
     /// - url: The URL where the asset will be streamed from. If nil then the player will simply clear
@@ -60,16 +62,9 @@ final class StreamRemoteAudioPlayer: AudioPlaying {
     /// property.
     private let assetPropertyLoader: AssetPropertyLoading
 
-    /// The notificationCenter on which the ``playbackFinishedObserver`` will be registered one
-    private let notificationCenter: NotificationCenter
-
-    /// A token referencing the periodicTimer that is registered on the player and is used to provide
-    /// time-related metadata updates.
-    private var periodicTimer: Any?
-
-    /// An observer token that tis used to reference the NotificationCenter registration, that is being used
-    /// to get notifications when the player's playback has been stopped.
-    private var playbackFinishedObserver: Any?
+    /// An observer that acts as a mediator between the AVPlayer and StreamAudioPlayer for playback
+    /// updates.
+    private let playerObserver: AudioPlayerObserving
 
     /// The delegate which should get informed when the player's context gets updated
     private(set) weak var delegate: AudioPlayingDelegate? {
@@ -78,11 +73,11 @@ final class StreamRemoteAudioPlayer: AudioPlaying {
 
     // MARK: - Lifecycle
 
-    convenience init() {
-        self.init(
+    static func build() -> AudioPlaying {
+        StreamRemoteAudioPlayer(
             debouncer: Debouncer(interval: 0.1),
             assetPropertyLoader: StreamAssetPropertyLoader(),
-            notificationCenter: .default,
+            playerObserver: StreamPlayerObserver(),
             player: .init()
         )
     }
@@ -90,22 +85,15 @@ final class StreamRemoteAudioPlayer: AudioPlaying {
     init(
         debouncer: Debouncing,
         assetPropertyLoader: AssetPropertyLoading,
-        notificationCenter: NotificationCenter,
+        playerObserver: AudioPlayerObserving,
         player: AVPlayer
     ) {
         self.debouncer = debouncer
         self.assetPropertyLoader = assetPropertyLoader
-        self.notificationCenter = notificationCenter
+        self.playerObserver = playerObserver
         self.player = player
 
         setUp()
-    }
-
-    deinit {
-        /// According to the documentation we need to remove the periodicTimeObserver if we had
-        /// registered one
-        /// https://developer.apple.com/documentation/avfoundation/avplayer/1385829-addperiodictimeobserverforinterv#return_value
-        periodicTimer.map { player.removeTimeObserver($0) }
     }
 
     // MARK: - Helpers
@@ -118,50 +106,71 @@ final class StreamRemoteAudioPlayer: AudioPlaying {
             preferredTimescale: CMTimeScale(NSEC_PER_SEC)
         )
 
-        periodicTimer = player.addPeriodicTimeObserver(
+        playerObserver.addPeriodicTimeObserver(
+            player,
             forInterval: interval,
-            queue: nil,
-            using: { [weak self] _ in
-                guard
-                    let self = self,
-                    self.context.isSeeking == false
-                else {
-                    return
-                }
+            queue: nil
+        ) { [weak self] in
+            guard
+                let self = self,
+                self.context.isSeeking == false
+            else {
+                return
+            }
 
-                self.updateContext { value in
-                    let currentTime = player.currentTime().seconds
-                    value.currentTime = currentTime.isFinite && !currentTime.isNaN
-                        ? TimeInterval(currentTime)
-                        : .zero
+            self.updateContext { value in
+                let currentTime = player.currentTime().seconds
+                value.currentTime = currentTime.isFinite && !currentTime.isNaN
+                    ? TimeInterval(currentTime)
+                    : .zero
 
-                    value.isSeeking = false
+                value.isSeeking = false
 
-                    value.state = player.rate != 0
-                        ? .playing
-                        : player.timeControlStatus == .paused ? .paused : .stopped
+                value.state = player.rate != 0
+                    ? .playing
+                    : player.timeControlStatus == .paused ? .paused : .stopped
 
-                    value.rate = .init(rawValue: player.rate) ?? .zero
+                value.rate = .init(rawValue: player.rate) ?? .zero
+            }
+        }
+
+        playerObserver.addTimeControlStatusObserver(player) { [weak self] newValue in
+            guard
+                let self = self,
+                let newValue = newValue
+            else {
+                return
+            }
+
+            let currentPlaybackState = self.context.state
+            self.updateContext { value in
+                switch (newValue, currentPlaybackState) {
+                case (.paused, .playing), (.paused, .stopped), (.paused, .loading):
+                    value.state = .paused
+                case (.playing, .paused), (.playing, .stopped), (.playing, .loading):
+                    value.state = .playing
+                default:
+                    log.debug("\(type(of: self)): No action for transition \(currentPlaybackState) -> \(newValue)")
                 }
             }
-        )
+        }
 
-        playbackFinishedObserver = notificationCenter.addObserver(
-            forName: NSNotification.Name.AVPlayerItemDidPlayToEndTime,
-            object: player,
-            queue: nil,
-            using: { [weak self] notification in
-                guard let self = self, (notification.object as? AVPlayer) == player else {
-                    return
-                }
-                self._context.mutate { value in
-                    value.state = .stopped
-                    value.currentTime = 0
-                }
-
-                self.delegate?.audioPlayer(self, didUpdateContext: self.context)
+        playerObserver.addStoppedPlaybackObserver(queue: nil) { [weak self] playerItem in
+            guard
+                let self = self,
+                let playerItemURL = (playerItem.asset as? AVURLAsset)?.url,
+                let currentItemURL = (player.currentItem?.asset as? AVURLAsset)?.url,
+                playerItemURL == currentItemURL
+            else {
+                return
             }
-        )
+            self._context.mutate { value in
+                value.state = .stopped
+                value.currentTime = 0
+            }
+
+            self.delegate?.audioPlayer(self, didUpdateContext: self.context)
+        }
     }
 
     /// Provides thread-safe updates for the player's context and makes sure to forward any updates
@@ -200,7 +209,7 @@ final class StreamRemoteAudioPlayer: AudioPlaying {
                 value.isSeeking = false
             }
 
-            play()
+            player.play()
 
         /// If the assetPropertyLoaded failed to load the asset's duration information we update the
         /// context with the notLoaded state in order and we log a debug error message
@@ -257,6 +266,18 @@ final class StreamRemoteAudioPlayer: AudioPlaying {
         from url: URL?,
         delegate: AudioPlayingDelegate
     ) {
+        if let url = url,
+           let currentItem = player.currentItem?.asset as? AVURLAsset,
+           url == currentItem.url {
+            /// If the currentItem is paused, we want to continue the playback
+            /// Otherwise, no action is required
+            if context.state == .paused {
+                player.play()
+            }
+
+            return
+        }
+
         /// We call stop to update the currently set delegate that the playback has been stopped
         /// and then we remove the current item from the player's queue.
         stop()
@@ -264,7 +285,7 @@ final class StreamRemoteAudioPlayer: AudioPlaying {
 
         if let url = url {
             self.delegate = delegate
-            updateContext { $0.state = .notLoaded }
+            updateContext { $0.state = .loading }
             let asset = AVURLAsset(url: url)
 
             assetPropertyLoader.loadProperty(
@@ -278,12 +299,10 @@ final class StreamRemoteAudioPlayer: AudioPlaying {
 
     func play() {
         player.play()
-        updateContext { value in value.state = .playing }
     }
 
     func pause() {
         player.pause()
-        updateContext { value in value.state = .paused }
     }
 
     func stop() {
