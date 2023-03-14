@@ -67,6 +67,215 @@ final class StreamRemoteAudioPlayer_Tests: XCTestCase {
         XCTAssertNil(playerObserver.addStoppedPlaybackObserverWasCalledWith?.queue)
     }
 
+    // MARK: - periodicTimerObserver
+
+    func test_periodicTimerObserver_isSeekingIsFalse_delegateWasUpdatedWithExpectedContext() {
+        assetPropertyLoader.loadPropertyResult = .success(TimeInterval(100))
+        subject.loadAsset(
+            from: .init(string: "http://getstream.io"),
+            delegate: audioPlayerDelegate
+        )
+
+        player.rate = 2
+
+        XCTAssertEqual(audioPlayerDelegate.didUpdateContextWasCalled?.context, .init(
+            duration: 100,
+            currentTime: 0,
+            state: .playing,
+            rate: .double,
+            isSeeking: false
+        ))
+    }
+
+    func test_periodicTimerObserver_isSeekingIsTrue_theContextWasNotUpdated() {
+        assetPropertyLoader.loadPropertyResult = .success(TimeInterval(100))
+        subject.loadAsset(
+            from: .init(string: "http://getstream.io"),
+            delegate: audioPlayerDelegate
+        )
+        syncDebouncer.holdExecution = true
+        subject.seek(to: 10)
+
+        playerObserver.addPeriodicTimeObserverWasCalledWith?.block()
+
+        XCTAssertEqual(audioPlayerDelegate.didUpdateContextWasCalled?.context, .init(
+            duration: 100,
+            currentTime: 10,
+            state: .paused,
+            rate: .zero,
+            isSeeking: true
+        ))
+    }
+
+    // MARK: - timeControlStatusObserver
+
+    // MARK: newState: .paused
+
+    func test_timeControlStatusObserver_newStateIsPausedCurrentStateIsNotLoaded_delegateWasNotCalled() {
+        playerObserver.addTimeControlStatusObserverWaCalledWith?.block(.paused)
+
+        XCTAssertNil(audioPlayerDelegate.didUpdateContextWasCalled?.context)
+    }
+
+    func test_timeControlStatusObserver_newStateIsPausedCurrentStateIsLoading_delegateWasCalledWithExpectedContext() {
+        assetPropertyLoader.holdLoadProperty = true
+        subject.loadAsset(
+            from: URL(string: "http://getstream.io")!,
+            delegate: audioPlayerDelegate
+        )
+
+        playerObserver.addTimeControlStatusObserverWaCalledWith?.block(.paused)
+
+        XCTAssertEqual(audioPlayerDelegate.didUpdateContextWasCalled?.context, .init(
+            duration: 0,
+            currentTime: 0,
+            state: .paused,
+            rate: .zero,
+            isSeeking: false
+        ))
+    }
+
+    func test_timeControlStatusObserver_newStateIsPausedCurrentStateIsPlaying_delegateWasCalledWithExpectedContext() {
+        assetPropertyLoader.loadPropertyResult = .success(TimeInterval(100))
+        subject.loadAsset(
+            from: URL(string: "http://getstream.io")!,
+            delegate: audioPlayerDelegate
+        )
+
+        playerObserver.addTimeControlStatusObserverWaCalledWith?.block(.paused)
+
+        XCTAssertEqual(audioPlayerDelegate.didUpdateContextWasCalled?.context, .init(
+            duration: 100,
+            currentTime: 0,
+            state: .paused,
+            rate: .zero,
+            isSeeking: false
+        ))
+    }
+
+    func test_timeControlStatusObserver_newStateIsPausedCurrentStateIsStopped_delegateWasNotCalled() {
+        assetPropertyLoader.loadPropertyResult = .success(TimeInterval(100))
+        subject.loadAsset(
+            from: URL(string: "http://getstream.io")!,
+            delegate: audioPlayerDelegate
+        )
+        playerObserver.addStoppedPlaybackObserverWasCalledWith?.block(.init(url: URL(string: "http://getstream.io")!))
+
+        playerObserver.addTimeControlStatusObserverWaCalledWith?.block(.paused)
+
+        XCTAssertEqual(audioPlayerDelegate.didUpdateContextWasCalled?.context, .init(
+            duration: 100,
+            currentTime: 0,
+            state: .stopped,
+            rate: .zero,
+            isSeeking: false
+        ))
+    }
+
+    // MARK: newState: .playing
+
+    func test_timeControlStatusObserver_newStateIsPlayingCurrentStateIsNotLoaded_delegateWasNotCalled() {
+        playerObserver.addTimeControlStatusObserverWaCalledWith?.block(.playing)
+
+        XCTAssertNil(audioPlayerDelegate.didUpdateContextWasCalled?.context)
+    }
+
+    func test_timeControlStatusObserver_newStateIsPlayingCurrentStateIsLoading_delegateWasCalledWithExpectedContext() {
+        assetPropertyLoader.holdLoadProperty = true
+        subject.loadAsset(
+            from: URL(string: "http://getstream.io")!,
+            delegate: audioPlayerDelegate
+        )
+
+        playerObserver.addTimeControlStatusObserverWaCalledWith?.block(.playing)
+
+        XCTAssertEqual(audioPlayerDelegate.didUpdateContextWasCalled?.context, .init(
+            duration: 0,
+            currentTime: 0,
+            state: .playing,
+            rate: .zero,
+            isSeeking: false
+        ))
+    }
+
+    func test_timeControlStatusObserver_newStateIsPlayingCurrentStateIsPaused_delegateWasCalledWithExpectedContext() {
+        assetPropertyLoader.loadPropertyResult = .success(TimeInterval(100))
+        subject.loadAsset(
+            from: URL(string: "http://getstream.io")!,
+            delegate: audioPlayerDelegate
+        )
+        subject.pause()
+
+        playerObserver.addTimeControlStatusObserverWaCalledWith?.block(.playing)
+
+        XCTAssertEqual(audioPlayerDelegate.didUpdateContextWasCalled?.context, .init(
+            duration: 100,
+            currentTime: 0,
+            state: .playing,
+            rate: .zero,
+            isSeeking: false
+        ))
+    }
+
+    func test_timeControlStatusObserver_newStateIsPlayingCurrentStateIsStopped_delegateWasNotCalled() {
+        assetPropertyLoader.loadPropertyResult = .success(TimeInterval(100))
+        subject.loadAsset(
+            from: URL(string: "http://getstream.io")!,
+            delegate: audioPlayerDelegate
+        )
+        playerObserver.addStoppedPlaybackObserverWasCalledWith?.block(.init(url: URL(string: "http://getstream.io")!))
+
+        playerObserver.addTimeControlStatusObserverWaCalledWith?.block(.playing)
+
+        XCTAssertEqual(audioPlayerDelegate.didUpdateContextWasCalled?.context, .init(
+            duration: 100,
+            currentTime: 0,
+            state: .playing,
+            rate: .zero,
+            isSeeking: false
+        ))
+    }
+
+    // MARK: - stoppedPlaybackObserver
+
+    func test_stoppedPlaybackObserver_currentItemIsTheSameAsTheStoppedOne_delegateWasCalledWithUpdatedContext() {
+        let url = URL(string: "http://getstream.io")!
+        assetPropertyLoader.loadPropertyResult = .success(TimeInterval(100))
+        subject.loadAsset(
+            from: url,
+            delegate: audioPlayerDelegate
+        )
+
+        playerObserver.addStoppedPlaybackObserverWasCalledWith?.block(.init(url: url))
+
+        XCTAssertEqual(audioPlayerDelegate.didUpdateContextWasCalled?.context, .init(
+            duration: 100,
+            currentTime: 0,
+            state: .stopped,
+            rate: .zero,
+            isSeeking: false
+        ))
+    }
+
+    func test_stoppedPlaybackObserver_currentItemIsNotTheSameAsTheStoppedOne_delegateWasNotCalledWithUpdatedContext() {
+        let url = URL(string: "http://getstream.io")!
+        assetPropertyLoader.loadPropertyResult = .success(TimeInterval(100))
+        subject.loadAsset(
+            from: url,
+            delegate: audioPlayerDelegate
+        )
+
+        playerObserver.addStoppedPlaybackObserverWasCalledWith?.block(.init(url: .init(string: "http://getstream.io/2")!))
+
+        XCTAssertEqual(audioPlayerDelegate.didUpdateContextWasCalled?.context, .init(
+            duration: 100,
+            currentTime: 0,
+            state: .playing,
+            rate: .normal,
+            isSeeking: false
+        ))
+    }
+
     // MARK: - loadAsset
 
     func test_loadAsset_whenURLIsNil_willCallPauseUpdateTheContextReplaceCurrentItemButWillNotCallLoadProperty() {
@@ -262,8 +471,13 @@ final class StreamRemoteAudioPlayer_Tests: XCTestCase {
 extension StreamRemoteAudioPlayer_Tests {
     private class SyncDebouncer: Debouncing {
         private(set) var debounceWasCalled: Bool = false
+        var holdExecution = false
 
         func debounce(_ handler: @escaping Handler) {
+            guard holdExecution == false else {
+                return
+            }
+
             debounceWasCalled = true
             handler()
         }
@@ -340,6 +554,7 @@ extension StreamRemoteAudioPlayer_Tests {
     private class MockAssetPropertyLoader: AssetPropertyLoading {
         var loadPropertyWasCalledWith: (property: AssetProperty, asset: AVURLAsset)?
         var loadPropertyResult: Result<Any, Error>?
+        var holdLoadProperty = false
 
         func loadProperty<Value>(
             _ property: AssetProperty,
@@ -347,6 +562,9 @@ extension StreamRemoteAudioPlayer_Tests {
             onSuccessTransformer: @escaping (AVURLAsset) -> Value,
             completion: @escaping (Result<Value, Error>) -> Void
         ) {
+            guard holdLoadProperty == false else {
+                return
+            }
             loadPropertyWasCalledWith = (property, asset)
             completion(loadPropertyResult!.map { $0 as! Value })
         }

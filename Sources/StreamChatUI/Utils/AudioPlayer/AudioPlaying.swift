@@ -98,7 +98,6 @@ final class StreamRemoteAudioPlayer: AudioPlaying {
 
     // MARK: - Helpers
 
-    /// Creates a new AVPlayer instance and registers the periodicTimer and the playbackFinishedObserver
     private func setUp() {
         let player = self.player
         let interval = CMTime(
@@ -126,15 +125,15 @@ final class StreamRemoteAudioPlayer: AudioPlaying {
 
                 value.isSeeking = false
 
-                value.state = player.rate != 0
-                    ? .playing
-                    : player.timeControlStatus == .paused ? .paused : .stopped
+                value.state = player.rate != 0 ? .playing : .paused
 
                 value.rate = .init(rawValue: player.rate) ?? .zero
             }
         }
 
-        playerObserver.addTimeControlStatusObserver(player) { [weak self] newValue in
+        playerObserver.addTimeControlStatusObserver(
+            player
+        ) { [weak self] newValue in
             guard
                 let self = self,
                 let newValue = newValue
@@ -143,10 +142,14 @@ final class StreamRemoteAudioPlayer: AudioPlaying {
             }
 
             let currentPlaybackState = self.context.state
+
             self.updateContext { value in
                 switch (newValue, currentPlaybackState) {
-                case (.paused, .playing), (.paused, .stopped), (.paused, .loading):
+                case (.playing, .playing), (.paused, .paused):
+                    break
+                case (.paused, .playing), (.paused, .loading):
                     value.state = .paused
+                    value.rate = .zero
                 case (.playing, .paused), (.playing, .stopped), (.playing, .loading):
                     value.state = .playing
                 default:
@@ -155,7 +158,9 @@ final class StreamRemoteAudioPlayer: AudioPlaying {
             }
         }
 
-        playerObserver.addStoppedPlaybackObserver(queue: nil) { [weak self] playerItem in
+        playerObserver.addStoppedPlaybackObserver(
+            queue: nil
+        ) { [weak self] playerItem in
             guard
                 let self = self,
                 let playerItemURL = (playerItem.asset as? AVURLAsset)?.url,
@@ -167,6 +172,8 @@ final class StreamRemoteAudioPlayer: AudioPlaying {
             self._context.mutate { value in
                 value.state = .stopped
                 value.currentTime = 0
+                value.rate = .zero
+                value.isSeeking = false
             }
 
             self.delegate?.audioPlayer(self, didUpdateContext: self.context)
@@ -212,7 +219,7 @@ final class StreamRemoteAudioPlayer: AudioPlaying {
             player.play()
 
         /// If the assetPropertyLoaded failed to load the asset's duration information we update the
-        /// context with the notLoaded state in order and we log a debug error message
+        /// context with the notLoaded state in order to inform the delegate and we log a debug error message
         case let .failure(error):
             updateContext { value in
                 value.duration = 0
