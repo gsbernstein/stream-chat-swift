@@ -280,6 +280,9 @@ final class StreamRemoteAudioPlayer: AudioPlaying {
             /// Otherwise, no action is required
             if context.state == .paused {
                 player.play()
+            } else if context.state == .stopped {
+                player.replaceCurrentItem(with: .init(asset: currentItem))
+                player.play()
             }
 
             return

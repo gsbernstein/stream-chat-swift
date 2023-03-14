@@ -364,6 +364,27 @@ final class StreamRemoteAudioPlayer_Tests: XCTestCase {
         ))
     }
 
+    func test_loadAsset_whenURLSameAsCurrentItemURLAndContextStateIsStopped_willNotCallAssetLoaderWillCallPlayAndUpdateState() {
+        let url = URL(string: "http://getstream.io")!
+        assetPropertyLoader.loadPropertyResult = .success(TimeInterval(100))
+        subject.loadAsset(from: url, delegate: audioPlayerDelegate)
+        playerObserver.addStoppedPlaybackObserverWasCalledWith?.block(.init(url: url))
+        assetPropertyLoader.loadPropertyWasCalledWith = nil
+        player.replaceCurrentItemWasCalledWithItem = nil
+
+        subject.loadAsset(from: url, delegate: audioPlayerDelegate)
+
+        XCTAssertNil(assetPropertyLoader.loadPropertyWasCalledWith)
+        XCTAssertEqual((player.replaceCurrentItemWasCalledWithItem?.asset as? AVURLAsset)?.url, url)
+        XCTAssertEqual(audioPlayerDelegate.didUpdateContextWasCalled?.context, .init(
+            duration: 100,
+            currentTime: 0,
+            state: .playing,
+            rate: .normal,
+            isSeeking: false
+        ))
+    }
+
     // MARK: - play
 
     func test_play_callsPlayOnPlayerAndUpdatesContextAndDelegate() {
@@ -491,7 +512,7 @@ extension StreamRemoteAudioPlayer_Tests {
         private(set) var pauseWasCalled = false
 
         private(set) var replaceCurrentItemWasCalled = false
-        private(set) var replaceCurrentItemWasCalledWithItem: AVPlayerItem?
+        var replaceCurrentItemWasCalledWithItem: AVPlayerItem?
 
         private(set) var rateWasUpdatedTo: Float?
 
